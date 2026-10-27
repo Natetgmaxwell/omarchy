@@ -151,6 +151,7 @@ trap 'rm -rf "$device_tmp"' EXIT
 mock_bin="$device_tmp/bin"
 mkdir -p "$mock_bin"
 export POWERED_FILE="$device_tmp/powered"
+export BREDR_FILE="$device_tmp/bredr"
 
 cat >"$mock_bin/bluetoothctl" <<'SH'
 #!/bin/bash
@@ -164,6 +165,14 @@ if [[ $1 == "show" ]]; then
   state="$POWERED_FILE"
   [[ -n ${2:-} && -f "$POWERED_FILE.$2" ]] && state="$POWERED_FILE.$2"
   printf '\tPowered: %s\n' "$(cat "$state")"
+fi
+[[ $* == *" scan on"* ]] && touch "$BREDR_FILE"
+if [[ $1 == "info" ]]; then
+  if [[ -f "$BREDR_FILE" || -n ${MOCK_CLASS:-} ]]; then
+    printf '\tClass: 0x00240418\n'
+  else
+    printf '\tName: Mock Device\n'
+  fi
 fi
 exit 0
 SH
@@ -262,6 +271,19 @@ pass "bluetooth lifts the block before connecting"
 grep -qx "connect AA:BB:CC:DD:EE:FF" "$unpowered_log" ||
   fail "bluetooth connects once the adapter is up" "$(cat "$unpowered_log")"
 pass "bluetooth connects once the adapter is up"
+
+# AirPods advertise over BLE before BlueZ has a BR/EDR record. Pairing in that
+# state fails, so the helper has to wait for a dual-mode inquiry to add Class:.
+bredr_log=$(rm -f "$BREDR_FILE"; OMARCHY_BLUETOOTH_BREDR_WAIT_SECONDS=5 bluetooth_run yes "$ROOT/bin/omarchy-bluetooth-device" pair AA:BB:CC:DD:EE:FF)
+awk '/--timeout 20 scan on/{scan=NR} /^pair AA:BB:CC:DD:EE:FF$/{pair=NR} END{exit !(scan && pair && scan < pair)}' "$bredr_log" ||
+  fail "bluetooth waits for BR/EDR discovery before pairing" "$(cat "$bredr_log")"
+pass "bluetooth waits for BR/EDR discovery before pairing"
+
+# A device that already has a BR/EDR record has nothing to wait for.
+known_log=$(rm -f "$BREDR_FILE"; MOCK_CLASS=1 bluetooth_run yes "$ROOT/bin/omarchy-bluetooth-device" pair AA:BB:CC:DD:EE:FF)
+grep -q -- '--timeout 20 scan on' "$known_log" &&
+  fail "bluetooth does not scan for a device with a BR/EDR record" "$(cat "$known_log")"
+pass "bluetooth pairs a device with a BR/EDR record without a scan"
 
 # Blocking hits every radio at once, so the read has to span them too. A bare
 # bluetoothctl show reports the default controller and misses a powered dongle.
