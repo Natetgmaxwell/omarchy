@@ -40,8 +40,9 @@ wait_for_bredr() {
   # keep advertising for Find My while they are not in pairing mode, so `pair`
   # can run before any BR/EDR record exists and fail with AuthenticationFailed
   # or "Device not available". A dual-mode inquiry adds `Class:`; wait for it
-  # before pairing. A device that already has a BR/EDR record or a bond skips
-  # the wait; a BLE-only device pays the timeout once.
+  # before pairing. Use the panel's discovery when it is running, but start an
+  # owned scan if it stops. A device that already has a BR/EDR record or a bond
+  # skips the wait; a BLE-only device pays the timeout once.
   local info
   info=$(timeout 2s bluetoothctl info "$address" 2>/dev/null)
   if [[ $info == *"Class:"* ]]; then
@@ -52,13 +53,15 @@ wait_for_bredr() {
   fi
 
   local scan_pid=""
-  if [[ $(timeout 2s bluetoothctl show 2>/dev/null) != *"Discovering: yes"* ]]; then
-    timeout 20s bluetoothctl --timeout 20 scan on >/dev/null 2>&1 &
-    scan_pid=$!
-  fi
-
   local deadline=$((SECONDS + ${OMARCHY_BLUETOOTH_BREDR_WAIT_SECONDS:-10}))
   while (( SECONDS < deadline )); do
+    if [[ -n $scan_pid ]] && ! kill -0 "$scan_pid" 2>/dev/null; then
+      scan_pid=""
+    fi
+    if [[ -z $scan_pid && $(timeout 2s bluetoothctl show 2>/dev/null) != *"Discovering: yes"* ]]; then
+      timeout 20s bluetoothctl --timeout 20 scan on >/dev/null 2>&1 &
+      scan_pid=$!
+    fi
     if [[ $(timeout 2s bluetoothctl info "$address" 2>/dev/null) == *"Class:"* ]]; then
       stop_scan "$scan_pid"
       return 0
